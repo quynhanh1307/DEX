@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 
 import './token.sol';
-import "hardhat/console.sol";
+import "../node_modules/hardhat/console.sol";
 
 
 contract TokenExchange is Ownable {
@@ -22,11 +22,13 @@ contract TokenExchange is Ownable {
     address[] private lp_providers;                     
 
     // liquidity rewards
-    uint private swap_fee_numerator = 3;                
+    uint private swap_fee_numerator = 1;                
     uint private swap_fee_denominator = 100;
 
     // Constant: x * y = k
     uint private k;
+    uint private denomination = 10**12;
+    bool private lock = false;
 
     constructor() {}
     
@@ -84,7 +86,40 @@ contract TokenExchange is Ownable {
         payable
     {
         /******* TODO: Implement this function *******/
-       
+        uint amountETH = msg.value;
+        require(amountETH > 0, "Amount of ETH must be a positive number");
+
+        uint tokensNeeded = amountETH * token_reserves / eth_reserves;
+
+        require(tokensNeeded <= token.balanceOf(msg.sender), "Do not have enough tokens");
+
+        require(eth_reserves / token_reserves >= min_exchange_rate, "Below min exchange rate");
+        require(eth_reserves / token_reserves <= max_exchange_rate, "Above max exchange rate");
+
+        token.transferFrom(msg.sender, address(this), tokensNeeded);
+        token_reserves = token.balanceOf(address(this));
+        eth_reserves = address(this).balance;
+
+        k = token_reserves * eth_reserves;
+
+        uint old_token_reserves = token_reserves - tokensNeeded;
+
+        bool senderExists = false;
+
+        for (uint i=0; i<lp_providers.length; i++){
+          if (lp_providers[i] == msg.sender){
+            senderExists = true;
+            lps[msg.sender] = (lps[msg.sender] * old_token_reserves + tokensNeeded * denomination) / token_reserves;
+          }else{
+            lps[lp_providers[i]] *= old_token_reserves;
+            lps[lp_providers[i]] /= token_reserves;
+          }
+        }
+
+        if (!senderExists){
+          lp_providers.push(msg.sender);
+          lps[msg.sender] = tokensNeeded * denomination / token_reserves;
+        }
     }
 
 
@@ -95,7 +130,41 @@ contract TokenExchange is Ownable {
         payable
     {
         /******* TODO: Implement this function *******/
+        require(!lock);
+        lock = true;
+        uint amountTokens = amountETH * token_reserves / eth_reserves;
 
+        require(amountTokens * denomination <= (lps[msg.sender] * token_reserves), "Do not have enough tokens");
+        require(amountETH / amountTokens >= min_exchange_rate, "Below min exchange rate");
+        require(amountETH / amountTokens <= max_exchange_rate, "Above max exchange rate");
+
+        uint old_token_reserves = token_reserves;
+        require(token_reserves - amountTokens > 0, "Error: Cannot deplete token reserves to 0");
+        require(eth_reserves - amountETH > 0, "Error: Cannot deplete ETH reserves to 0");
+
+        token.transfer(msg.sender, amountTokens);
+        token_reserves = token.balanceOf(address(this));
+        payable(msg.sender).transfer(amountETH);
+        eth_reserves = address(this).balance;
+
+        k = token_reserves * eth_reserves;
+
+        lps[msg.sender] = ((lps[msg.sender] * old_token_reserves) - amountTokens * denomination) / token_reserves;
+        uint senderIdx = 0;
+
+        for (uint i=0; i<lp_providers.length; i++){
+          if (lp_providers[i] == msg.sender){
+            senderIdx = i;
+          }else{
+            lps[lp_providers[i]] *= old_token_reserves;
+            lps[lp_providers[i]] /= token_reserves;
+          }
+        }
+
+        if (lps[msg.sender] == 0){
+          removeLP(senderIdx);
+        }
+        lock = false;
     }
 
     // Function removeAllLiquidity: Removes all liquidity that msg.sender is entitled to withdraw
@@ -105,7 +174,15 @@ contract TokenExchange is Ownable {
         payable
     {
         /******* TODO: Implement this function *******/
-    
+        uint toRemove = lps[msg.sender] * token_reserves / denomination;
+        if (token_reserves - toRemove < 1){
+          toRemove -= 1;
+        }
+        uint amountETH = toRemove * eth_reserves / token_reserves;
+        if (eth_reserves - amountETH < 1){
+          amountETH -= 1;
+        }
+        removeLiquidity(amountETH, max_exchange_rate, min_exchange_rate);
     }
     /***  Define additional functions for liquidity fees here as needed ***/
 
@@ -119,7 +196,24 @@ contract TokenExchange is Ownable {
         payable
     {
         /******* TODO: Implement this function *******/
+        require(!lock);
+        lock = true;
 
+        require(amountTokens > 0, "Error: Must swap a positive amount of Tokens");
+        require(amountTokens <= token.balanceOf(msg.sender), "Error: Don\'t have enough tokens");
+        uint amountETH = eth_reserves - (k / (token_reserves + amountTokens));
+        uint fees = amountETH * swap_fee_numerator / swap_fee_denominator;
+        amountETH -= fees;
+        
+        require(eth_reserves - amountETH >= 1, "Error: Cannot deplete ETH reserves below 1 ETH");
+        require(eth_reserves / token_reserves <= max_exchange_rate, "Error: Exchange rate greater than specified rate");
+        token.transferFrom(msg.sender, address(this), amountTokens);
+        token_reserves = token.balanceOf(address(this));
+
+        payable(msg.sender).transfer(amountETH);
+        eth_reserves = address(this).balance;
+
+        lock = false;
     }
 
 
@@ -132,6 +226,20 @@ contract TokenExchange is Ownable {
         payable 
     {
         /******* TODO: Implement this function *******/
+        require(!lock);
+        lock = true;
 
+        require(msg.value > 0, "Error: Must swap a positive amount of ETH");
+        uint amountTokens = token_reserves - (k / (eth_reserves + msg.value));
+        uint fees = amountTokens * swap_fee_numerator / swap_fee_denominator;
+        amountTokens -= fees;
+
+        require(token_reserves - amountTokens >= 1, "Error: Cannot deplete Token reserves below 1 Token");
+        require(eth_reserves / token_reserves <= max_exchange_rate, "Error: Exchange rate greater than specified rate");
+        eth_reserves = address(this).balance;
+        token.transfer(msg.sender, amountTokens);
+        token_reserves = token.balanceOf(address(this));
+
+        lock = false;
     }
 }

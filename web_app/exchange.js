@@ -6,10 +6,10 @@
 const provider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
 var defaultAccount;
 
-const exchange_name = '';             // TODO: fill in the name of your exchange
+const exchange_name = 'Group1 - DEX';             // TODO: fill in the name of your exchange
 
-const token_name = '';                // TODO: replace with name of your token
-const token_symbol = '';              // TODO: replace with symbol for your token
+const token_name = 'Group1';                // TODO: replace with name of your token
+const token_symbol = 'G1';              // TODO: replace with symbol for your token
 
 
 // =============================================================================
@@ -578,7 +578,7 @@ const exchange_abi = [
     "type": "function"
   }
 ];
-const exchange_address = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';                
+const exchange_address = '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9';                
 const exchange_contract = new ethers.Contract(exchange_address, exchange_abi, provider.getSigner());
 
 
@@ -626,33 +626,63 @@ async function getPoolState() {
 
 // Note: maxSlippagePct will be passed in as an int out of 100. 
 // Be sure to divide by 100 for your calculations.
+async function getRates(maxSlippagePct){
+  let poolRate = (await getPoolState())["eth_token_rate"];
+  console.log(poolRate);
+  let max_exchange_rate = Math.floor(poolRate * (1 + maxSlippagePct / 100.0));
+  let min_exchange_rate = Math.floor(poolRate * (1 - maxSlippagePct / 100.0));
+  return { max_exchange_rate, min_exchange_rate };
+}
 
 /*** ADD LIQUIDITY ***/
 async function addLiquidity(amountEth, maxSlippagePct) {
     /** TODO: ADD YOUR CODE HERE **/
-   
+    if (amountEth < 0){
+      window.alert("Amount of ETH must be a positive number");
+      return;
+    }
+    let rates = await getRates(maxSlippagePct);
+    await token_contract.connect(provider.getSigner(defaultAccount)).approve(exchange_address, Math.floor(rates.max_exchange_rate * amountEth));
+    await exchange_contract.connect(provider.getSigner(defaultAccount)).addLiquidity(rates.max_exchange_rate, rates.min_exchange_rate, {value: ethers.utils.parseUnits(String(amountEth), "wei") });
 }
 
 /*** REMOVE LIQUIDITY ***/
 async function removeLiquidity(amountEth, maxSlippagePct) {
     /** TODO: ADD YOUR CODE HERE **/
-    
+    if (amountEth < 0){
+      window.alert("Amount of ETH must be a positive number");
+      return;
+    }
+    let rates = await getRates(maxSlippagePct);
+    await exchange_contract.connect(provider.getSigner(defaultAccount)).removeLiquidity(amountEth, rates.max_exchange_rate, rates.min_exchange_rate);
 }
 
 async function removeAllLiquidity(maxSlippagePct) {
     /** TODO: ADD YOUR CODE HERE **/
-   
+    let rates = await getRates(maxSlippagePct);
+  await exchange_contract.connect(provider.getSigner(defaultAccount)).removeAllLiquidity(rates.max_exchange_rate, rates.min_exchange_rate);
 }
 
 /*** SWAP ***/
 async function swapTokensForETH(amountToken, maxSlippagePct) {
     /** TODO: ADD YOUR CODE HERE **/
-   
+    if (amountToken < 0){
+      window.alert("Amount of Tokens must be a positive number");
+      return;
+    }
+    let rates = await getRates(maxSlippagePct);
+    await token_contract.connect(provider.getSigner(defaultAccount)).approve(exchange_address, amountToken);
+    await exchange_contract.connect(provider.getSigner(defaultAccount)).swapTokensForETH(amountToken, rates.max_exchange_rate);
 }
 
 async function swapETHForTokens(amountEth, maxSlippagePct) {
     /** TODO: ADD YOUR CODE HERE **/
-   
+    if (amountEth < 0){
+      window.alert("Amount of ETH must be a positive number");
+      return;
+    }
+    let rates = await getRates(maxSlippagePct);
+    await exchange_contract.connect(provider.getSigner(defaultAccount)).swapETHForTokens(rates.max_exchange_rate, {value: ethers.utils.parseUnits(String(amountEth), "wei") });
 }
 
 // =============================================================================
@@ -701,12 +731,24 @@ $("#swap-token").click(function() {
 });
 
 // This runs the 'addLiquidity' function when you click the button
-$("#add-liquidity").click(function() {
+$("#add-liquidity").click(async function() {
     console.log("Account: ", $("#myaccount").val());
     defaultAccount = $("#myaccount").val(); //sets the default account
-  addLiquidity($("#amt-eth").val(), $("#max-slippage-liquid").val()).then((response)=>{
-        window.location.reload(true); // refreshes the page after add_IOU returns and the promise is unwrapped
-    })
+    
+    var balance = await token_contract.connect(provider.getSigner(defaultAccount)).balanceOf(defaultAccount);  
+    var currentETHtoToken;
+    await getPoolState().then((poolState) => {
+      currentETHtoToken = poolState['token_eth_rate'];
+    });
+
+    if (balance.toNumber() < Number($("#amt-eth").val())/currentETHtoToken) {
+      window.alert("Do not have enough tokens");
+      // console.log($("#amt-eth").val()/currentETHtoToken)
+    }
+    else
+      addLiquidity($("#amt-eth").val(), $("#max-slippage-liquid").val()).then((response)=>{
+            window.location.reload(true); // refreshes the page after add_IOU returns and the promise is unwrapped
+        })
 });
 
 // This runs the 'removeLiquidity' function when you click the button
@@ -731,6 +773,13 @@ $("#swap-token").html("Swap " + token_symbol + " for ETH");
 
 $("#title").html(exchange_name);
 
+// check current tokens
+$("#current-balance").click(async function() {
+  defaultAccount = $("#myaccount").val(); //sets the default account
+  var balance = await token_contract.connect(provider.getSigner(defaultAccount)).balanceOf(defaultAccount);  
+  console.log(provider)
+  document.getElementById("show-current-balance").innerHTML = balance + " tokens";
+});
 
 // This is a log function, provided if you want to display things to the page instead of the JavaScript console
 // Pass in a discription of what you're printing, and then the object to print
