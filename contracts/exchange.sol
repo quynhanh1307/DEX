@@ -30,6 +30,9 @@ contract TokenExchange is Ownable {
     uint private denomination = 10**12;
     bool private lock = false;
 
+    mapping(address => uint) private token_fees;
+    mapping(address => uint) private eth_fees;
+
     constructor() {}
     
 
@@ -119,6 +122,8 @@ contract TokenExchange is Ownable {
         if (!senderExists){
           lp_providers.push(msg.sender);
           lps[msg.sender] = tokensNeeded * denomination / token_reserves;
+          token_fees[msg.sender] = 0;
+          eth_fees[msg.sender] = 0;
         }
     }
 
@@ -139,8 +144,8 @@ contract TokenExchange is Ownable {
         require(amountETH / amountTokens <= max_exchange_rate, "Above max exchange rate");
 
         uint old_token_reserves = token_reserves;
-        require(token_reserves - amountTokens > 0, "Error: Cannot deplete token reserves to 0");
-        require(eth_reserves - amountETH > 0, "Error: Cannot deplete ETH reserves to 0");
+        require(token_reserves - amountTokens > 0, "Tokens in pool not enough");
+        require(eth_reserves - amountETH > 0, "ETH in pool not enough");
 
         token.transfer(msg.sender, amountTokens);
         token_reserves = token.balanceOf(address(this));
@@ -151,15 +156,25 @@ contract TokenExchange is Ownable {
 
         lps[msg.sender] = ((lps[msg.sender] * old_token_reserves) - amountTokens * denomination) / token_reserves;
         uint senderIdx = 0;
+        uint token_reward = 0;
+        uint eth_reward = 0;
 
         for (uint i=0; i<lp_providers.length; i++){
           if (lp_providers[i] == msg.sender){
             senderIdx = i;
+            token_reward = token_fees[lp_providers[i]];
+            eth_reward = eth_fees[lp_providers[i]];
+
+            token_fees[lp_providers[i]] = 0;
+            eth_fees[lp_providers[i]] = 0;
           }else{
             lps[lp_providers[i]] *= old_token_reserves;
             lps[lp_providers[i]] /= token_reserves;
           }
         }
+
+        token.transfer(msg.sender, token_reward);
+        payable(msg.sender).transfer(eth_reward);
 
         if (lps[msg.sender] == 0){
           removeLP(senderIdx);
@@ -199,19 +214,24 @@ contract TokenExchange is Ownable {
         require(!lock);
         lock = true;
 
-        require(amountTokens > 0, "Error: Must swap a positive amount of Tokens");
-        require(amountTokens <= token.balanceOf(msg.sender), "Error: Don\'t have enough tokens");
+        require(amountTokens > 0, "Amount of Tokens must be a positive number");
+        require(amountTokens <= token.balanceOf(msg.sender), "Do not have enough tokens");
         uint amountETH = eth_reserves - (k / (token_reserves + amountTokens));
         uint fees = amountETH * swap_fee_numerator / swap_fee_denominator;
         amountETH -= fees;
         
-        require(eth_reserves - amountETH >= 1, "Error: Cannot deplete ETH reserves below 1 ETH");
-        require(eth_reserves / token_reserves <= max_exchange_rate, "Error: Exchange rate greater than specified rate");
+        require(eth_reserves - amountETH >= 1, "ETH in pool must not < 1");
+        require(eth_reserves / token_reserves <= max_exchange_rate, "Exchange rate greater than specified rate");
         token.transferFrom(msg.sender, address(this), amountTokens);
         token_reserves = token.balanceOf(address(this));
 
         payable(msg.sender).transfer(amountETH);
-        eth_reserves = address(this).balance;
+        eth_reserves = address(this).balance - fees;
+
+        // update eth_fees_store
+        for (uint i=0; i<lp_providers.length; i++){
+          eth_fees[lp_providers[i]] += fees*lps[lp_providers[i]]/denomination;
+        }
 
         lock = false;
     }
@@ -229,16 +249,21 @@ contract TokenExchange is Ownable {
         require(!lock);
         lock = true;
 
-        require(msg.value > 0, "Error: Must swap a positive amount of ETH");
+        require(msg.value > 0, "Amount of ETH must be a positive number");
         uint amountTokens = token_reserves - (k / (eth_reserves + msg.value));
         uint fees = amountTokens * swap_fee_numerator / swap_fee_denominator;
         amountTokens -= fees;
 
-        require(token_reserves - amountTokens >= 1, "Error: Cannot deplete Token reserves below 1 Token");
-        require(eth_reserves / token_reserves <= max_exchange_rate, "Error: Exchange rate greater than specified rate");
+        require(token_reserves - amountTokens >= 1, "Token in pool must not < 1");
+        require(eth_reserves / token_reserves <= max_exchange_rate, "Exchange rate greater than specified rate");
         eth_reserves = address(this).balance;
         token.transfer(msg.sender, amountTokens);
-        token_reserves = token.balanceOf(address(this));
+        token_reserves = token.balanceOf(address(this)) - fees;
+
+        // update token_fees_store
+        for (uint i=0; i<lp_providers.length; i++){
+          token_fees[lp_providers[i]] += fees*lps[lp_providers[i]]/denomination;
+        }
 
         lock = false;
     }
